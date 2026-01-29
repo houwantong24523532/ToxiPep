@@ -103,15 +103,16 @@ class peptide(nn.Module):
             *[TransformerBlock(d_model, n_heads, d_ff) for _ in range(n_layers)]
         )
         self.pool = nn.AdaptiveMaxPool1d(1)
+        # 降低dropout值，避免模型欠拟合导致无法学习到少数类特征
         self.fc = nn.Sequential(
             nn.Linear(d_model, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout(0.6),
+            nn.LayerNorm(128),  # LayerNorm比BatchNorm更稳定
+            nn.GELU(),
+            nn.Dropout(0.3),  # 从0.6降低到0.3
             nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Dropout(0.6),
+            nn.LayerNorm(64),
+            nn.GELU(),
+            nn.Dropout(0.3),  # 从0.6降低到0.3
             nn.Linear(64, d_model)
         )
 
@@ -153,7 +154,30 @@ class ToxiPep_Model(nn.Module):
         self.structural_model = Structural(**structural_config)
         self.structural_linear = nn.Linear(1024, cross_attention_dim)
         self.cross_attention = CrossAttention(embed_dim=cross_attention_dim, n_heads=n_heads)
-        self.fc = nn.Linear(2 * cross_attention_dim, 2)
+        
+        # 改进的分类器：增加容量和残差连接，提高对少数类的识别能力
+        combined_dim = 2 * cross_attention_dim
+        hidden_dim = 256
+        
+        self.classifier = nn.Sequential(
+            nn.Linear(combined_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),  # GELU比ReLU更平滑，有助于梯度流动
+            nn.Dropout(0.3),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.3),
+        )
+        
+        # 残差连接的投影层
+        self.residual_proj = nn.Linear(combined_dim, hidden_dim)
+        
+        # 最终输出层
+        self.output_layer = nn.Linear(hidden_dim, 2)
+        
+        # 用于标签平滑的温度参数
+        self.temperature = 1.0
 
     def forward(self, input_ids, graph_features, device):
         peptide_output = self.peptide_model(input_ids)
@@ -168,5 +192,10 @@ class ToxiPep_Model(nn.Module):
 
         combined_features = torch.cat((cross_peptide, cross_structural), dim=1)
 
-        logits = self.fc(combined_features)
+        # 带残差连接的分类器
+        hidden = self.classifier(combined_features)
+        residual = self.residual_proj(combined_features)
+        hidden = hidden + residual  # 残差连接
+        
+        logits = self.output_layer(hidden) / self.temperature
         return logits

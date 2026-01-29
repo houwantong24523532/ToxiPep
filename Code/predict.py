@@ -116,7 +116,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"使用设备: {device}")
 
 model = ToxiPep_Model(vocab_size, d_model, d_ff, n_layers, n_heads, max_len, structural_config=structural_config).to(device)
-model.load_state_dict(torch.load(args.m, map_location=device))
+model.load_state_dict(torch.load(args.m, map_location=device, weights_only=False))
 print(f"已加载模型: {args.m}")
 
 # 创建数据集和数据加载器

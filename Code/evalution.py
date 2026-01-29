@@ -8,7 +8,10 @@ from sklearn.metrics import confusion_matrix, matthews_corrcoef, roc_auc_score, 
 import pandas as pd
 
 
-def evaluate_model(model, test_loader, criterion, device):
+def evaluate_model(model, test_loader, criterion, device, threshold=0.5):
+    """
+    评估模型，支持自定义阈值
+    """
     model.eval()
     total_loss = 0
     correct = 0
@@ -24,7 +27,8 @@ def evaluate_model(model, test_loader, criterion, device):
             total_loss += loss.item()
 
             probs = torch.softmax(outputs, dim=1)[:, 1]  # 正类概率
-            preds = outputs.argmax(dim=1)
+            # 使用自定义阈值进行预测
+            preds = (probs >= threshold).long()
             correct += (preds == labels).sum().item()
 
             all_preds.extend(preds.cpu().numpy())
@@ -86,14 +90,27 @@ test_loader = Data.DataLoader(test_dataset, batch_size=64, shuffle=False)
 # 加载模型
 model = ToxiPep_Model(vocab_size, d_model, d_ff, n_layers, n_heads, max_len,
                       structural_config=structural_config).to(device)
-model.load_state_dict(torch.load("best_model.pth", map_location=device))
-print("已加载模型: best_model.pth")
+
+# 加载checkpoint（新格式包含 model_state_dict, optimal_threshold, metrics）
+checkpoint = torch.load("best_model.pth", map_location=device, weights_only=False)
+
+# 兼容新旧两种保存格式
+if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+    # 新格式：包含额外信息
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimal_threshold = checkpoint.get('optimal_threshold', 0.5)
+    print(f"已加载模型: best_model.pth (最优阈值: {optimal_threshold:.2f})")
+else:
+    # 旧格式：直接是 state_dict
+    model.load_state_dict(checkpoint)
+    optimal_threshold = 0.5
+    print("已加载模型: best_model.pth (使用默认阈值: 0.5)")
 
 criterion = nn.CrossEntropyLoss()
 
-# 评估模型
-print("\n正在评估模型...")
-_, _, all_preds, all_labels, all_probs = evaluate_model(model, test_loader, criterion, device)
+# 评估模型（使用最优阈值）
+print(f"\n正在评估模型（阈值: {optimal_threshold:.2f}）...")
+_, _, all_preds, all_labels, all_probs = evaluate_model(model, test_loader, criterion, device, threshold=optimal_threshold)
 
 # 计算指标
 acc, sen, spe, pre, f1, mcc, roc_auc, pr_auc = calculate_metrics(all_labels, all_preds, all_probs)
