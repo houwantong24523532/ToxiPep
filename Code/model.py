@@ -31,13 +31,13 @@ class EmbeddingLayer(nn.Module):
         super(EmbeddingLayer, self).__init__()
         self.src_emb = nn.Embedding(vocab_size, d_model)
         self.pos_emb = PositionalEncoding(d_model)
-        self.bi_gru = nn.GRU(d_model, d_model // 2, num_layers=2, batch_first=True, bidirectional=True, dropout=0.3)
+        self.bi_lstm = nn.LSTM(d_model, d_model // 2, num_layers=2, batch_first=True, bidirectional=True, dropout=0.3)
 
     def forward(self, input_ids):
         x = self.src_emb(input_ids)
         embeddings = self.pos_emb(x.transpose(0, 1)).transpose(0, 1)
-        gru_output, _ = self.bi_gru(embeddings)
-        return gru_output
+        lstm_output, _ = self.bi_lstm(embeddings)
+        return lstm_output
 
 
 
@@ -80,7 +80,7 @@ class Structural(nn.Module):
         )
 
         self.fc = nn.Linear(len(filter_sizes) * filter_num, 1024)
-        self.dropout = nn.Dropout(0.5)
+        self.dropout = nn.Dropout(0.3)
 
     def forward(self, graph, device):
 
@@ -106,14 +106,10 @@ class peptide(nn.Module):
         # 降低dropout值，避免模型欠拟合导致无法学习到少数类特征
         self.fc = nn.Sequential(
             nn.Linear(d_model, 128),
-            nn.LayerNorm(128),  # LayerNorm比BatchNorm更稳定
+            nn.LayerNorm(128),
             nn.GELU(),
-            nn.Dropout(0.3),  # 从0.6降低到0.3
-            nn.Linear(128, 64),
-            nn.LayerNorm(64),
-            nn.GELU(),
-            nn.Dropout(0.3),  # 从0.6降低到0.3
-            nn.Linear(64, d_model)
+            nn.Dropout(0.3),
+            nn.Linear(128, d_model)
         )
 
     def forward(self, input_ids):
@@ -124,78 +120,90 @@ class peptide(nn.Module):
         return logits
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+class BilinearAttentionNetwork(nn.Module):
+    """BAN: 使用低秩双线性池化 + 多glimpse实现多模态特征融合"""
 
+    def __init__(self, v_dim, q_dim, hidden_dim=128, n_glimpses=4, dropout=0.3):
+        super(BilinearAttentionNetwork, self).__init__()
+        self.n_glimpses = n_glimpses
+        self.hidden_dim = hidden_dim
+        self.output_dim = hidden_dim * n_glimpses
 
-class CrossAttention(nn.Module):
-    def __init__(self, embed_dim, n_heads):
-        super(CrossAttention, self).__init__()
-        self.multihead_attn = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=n_heads, batch_first=True)
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.norm2 = nn.LayerNorm(embed_dim)
+        self.v_proj = nn.ModuleList(
+            [nn.Linear(v_dim, hidden_dim) for _ in range(n_glimpses)]
+        )
+        self.q_proj = nn.ModuleList(
+            [nn.Linear(q_dim, hidden_dim) for _ in range(n_glimpses)]
+        )
+        self.bilinear_fc = nn.ModuleList(
+            [nn.Linear(hidden_dim, hidden_dim) for _ in range(n_glimpses)]
+        )
+        self.norms = nn.ModuleList(
+            [nn.LayerNorm(hidden_dim) for _ in range(n_glimpses)]
+        )
+        self.dropout = nn.Dropout(dropout)
 
-    def forward(self, q, k, v):
-        attn_output_1, _ = self.multihead_attn(q, k, v)
-        q = self.norm1(q + attn_output_1)
-
-        attn_output_2, _ = self.multihead_attn(k, q, v)
-        k = self.norm2(k + attn_output_2)
-
-        return q, k
+    def forward(self, v, q):
+        """
+        v: (batch, v_dim) — 结构特征
+        q: (batch, q_dim) — 肽序列特征
+        return: (batch, hidden_dim * n_glimpses)
+        """
+        glimpses = []
+        for i in range(self.n_glimpses):
+            v_p = self.v_proj[i](v)
+            q_p = self.q_proj[i](q)
+            interaction = v_p * q_p  # Hadamard积 — 双线性池化核心
+            interaction = self.bilinear_fc[i](interaction)
+            interaction = self.norms[i](interaction)
+            interaction = F.relu(interaction)
+            interaction = self.dropout(interaction)
+            glimpses.append(interaction)
+        return torch.cat(glimpses, dim=-1)
 
 
 
 class ToxiPep_Model(nn.Module):
-    def __init__(self, vocab_size, d_model, d_ff, n_layers, n_heads, max_len, structural_config, cross_attention_dim=256):
+    def __init__(self, vocab_size, d_model, d_ff, n_layers, n_heads, max_len, structural_config,
+                 ban_hidden_dim=128, n_glimpses=4):
         super(ToxiPep_Model, self).__init__()
         self.peptide_model = peptide(vocab_size, d_model, d_ff, n_layers, n_heads, max_len)
         self.structural_model = Structural(**structural_config)
-        self.structural_linear = nn.Linear(1024, cross_attention_dim)
-        self.cross_attention = CrossAttention(embed_dim=cross_attention_dim, n_heads=n_heads)
-        
-        # 改进的分类器：增加容量和残差连接，提高对少数类的识别能力
-        combined_dim = 2 * cross_attention_dim
+        self.structural_linear = nn.Linear(1024, d_model)
+
+        self.ban = BilinearAttentionNetwork(
+            v_dim=d_model, q_dim=d_model,
+            hidden_dim=ban_hidden_dim, n_glimpses=n_glimpses
+        )
+
+        combined_dim = ban_hidden_dim * n_glimpses
         hidden_dim = 256
-        
+
         self.classifier = nn.Sequential(
             nn.Linear(combined_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
-            nn.GELU(),  # GELU比ReLU更平滑，有助于梯度流动
+            nn.GELU(),
             nn.Dropout(0.3),
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU(),
             nn.Dropout(0.3),
         )
-        
-        # 残差连接的投影层
+
         self.residual_proj = nn.Linear(combined_dim, hidden_dim)
-        
-        # 最终输出层
         self.output_layer = nn.Linear(hidden_dim, 2)
-        
-        # 用于标签平滑的温度参数
         self.temperature = 1.0
 
     def forward(self, input_ids, graph_features, device):
         peptide_output = self.peptide_model(input_ids)
         structural_output = self.structural_model(graph_features, device)
         structural_output = self.structural_linear(structural_output)
-        peptide_output = peptide_output.unsqueeze(1)
-        structural_output = structural_output.unsqueeze(1)
-        cross_peptide, cross_structural = self.cross_attention(peptide_output, structural_output, structural_output)
 
-        cross_peptide = cross_peptide.squeeze(1)
-        cross_structural = cross_structural.squeeze(1)
+        fused = self.ban(structural_output, peptide_output)
 
-        combined_features = torch.cat((cross_peptide, cross_structural), dim=1)
+        hidden = self.classifier(fused)
+        residual = self.residual_proj(fused)
+        hidden = hidden + residual
 
-        # 带残差连接的分类器
-        hidden = self.classifier(combined_features)
-        residual = self.residual_proj(combined_features)
-        hidden = hidden + residual  # 残差连接
-        
         logits = self.output_layer(hidden) / self.temperature
         return logits

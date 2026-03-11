@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import pandas as pd
 from torch.utils.data import DataLoader, Dataset
-from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, matthews_corrcoef, roc_auc_score
+
 from model import ToxiPep_Model
 from dataset import convert_to_graph_channel
 
@@ -76,8 +76,8 @@ def evaluate_model(model, data_loader, device):
         for input_ids, graph_features in data_loader:
             input_ids, graph_features = input_ids.to(device), graph_features.to(device)
             outputs = model(input_ids, graph_features, device)
-            probs = torch.softmax(outputs, dim=1)[:, 1]  # 获取正类概率
-            preds = outputs.argmax(dim=1)
+            probs = torch.softmax(outputs, dim=1)[:, 1]
+            preds = (probs >= optimal_threshold).long()
             predictions.extend(preds.cpu().numpy())
             probabilities.extend(probs.cpu().numpy())
     return predictions, probabilities
@@ -116,8 +116,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"使用设备: {device}")
 
 model = ToxiPep_Model(vocab_size, d_model, d_ff, n_layers, n_heads, max_len, structural_config=structural_config).to(device)
-model.load_state_dict(torch.load(args.m, map_location=device, weights_only=False))
-print(f"已加载模型: {args.m}")
+checkpoint = torch.load(args.m, map_location=device, weights_only=False)
+if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimal_threshold = checkpoint.get('optimal_threshold', 0.5)
+else:
+    model.load_state_dict(checkpoint)
+    optimal_threshold = 0.5
+print(f"已加载模型: {args.m} (阈值: {optimal_threshold:.2f})")
 
 # 创建数据集和数据加载器
 test_dataset = PeptideDataset(padded_sequences, graph_features)

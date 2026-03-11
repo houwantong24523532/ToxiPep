@@ -14,7 +14,6 @@ def evaluate_model(model, test_loader, criterion, device, threshold=0.5):
     """
     model.eval()
     total_loss = 0
-    correct = 0
     all_preds, all_labels, all_probs = [], [], []
 
     with torch.no_grad():
@@ -26,30 +25,25 @@ def evaluate_model(model, test_loader, criterion, device, threshold=0.5):
             loss = criterion(outputs, labels)
             total_loss += loss.item()
 
-            probs = torch.softmax(outputs, dim=1)[:, 1]  # 正类概率
-            # 使用自定义阈值进行预测
+            probs = torch.softmax(outputs, dim=1)[:, 1]
             preds = (probs >= threshold).long()
-            correct += (preds == labels).sum().item()
 
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
 
-    accuracy = correct / len(test_loader.dataset)
-    return total_loss / len(test_loader), accuracy, all_preds, all_labels, all_probs
+    return total_loss / len(test_loader), all_preds, all_labels, all_probs
 
 
 def calculate_metrics(all_labels, all_preds, all_probs):
     tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel()
-    acc = (tp + tn) / (tp + tn + fp + fn)
-    sen = tp / (tp + fn)  # Sensitivity / Recall
-    spe = tn / (tn + fp)  # Specificity
-    pre = tp / (tp + fp) if (tp + fp) > 0 else 0  # Precision
-    f1 = 2 * pre * sen / (pre + sen) if (pre + sen) > 0 else 0  # F1-Score
+    pre = tp / (tp + fp) if (tp + fp) > 0 else 0
+    sen = tp / (tp + fn) if (tp + fn) > 0 else 0
+    f1 = 2 * pre * sen / (pre + sen) if (pre + sen) > 0 else 0
     mcc = matthews_corrcoef(all_labels, all_preds)
-    roc_auc = roc_auc_score(all_labels, all_probs)  # ROC-AUC
-    pr_auc = average_precision_score(all_labels, all_probs)  # PR-AUC (Average Precision)
-    return acc, sen, spe, pre, f1, mcc, roc_auc, pr_auc
+    roc_auc = roc_auc_score(all_labels, all_probs)
+    pr_auc = average_precision_score(all_labels, all_probs)
+    return mcc, f1, roc_auc, pr_auc
 
 
 def save_metrics_to_csv(metrics, filename="metrics.csv"):
@@ -110,33 +104,25 @@ criterion = nn.CrossEntropyLoss()
 
 # 评估模型（使用最优阈值）
 print(f"\n正在评估模型（阈值: {optimal_threshold:.2f}）...")
-_, _, all_preds, all_labels, all_probs = evaluate_model(model, test_loader, criterion, device, threshold=optimal_threshold)
+_, all_preds, all_labels, all_probs = evaluate_model(model, test_loader, criterion, device, threshold=optimal_threshold)
 
 # 计算指标
-acc, sen, spe, pre, f1, mcc, roc_auc, pr_auc = calculate_metrics(all_labels, all_preds, all_probs)
+mcc, f1, roc_auc, pr_auc = calculate_metrics(all_labels, all_preds, all_probs)
 
 # 打印结果
-print("\n" + "=" * 60)
+print("\n" + "=" * 40)
 print("测试集评估结果")
-print("=" * 60)
-print(f"  准确率 (Acc):       {acc:.4f}")
-print(f"  灵敏度 (Sn):        {sen:.4f}")
-print(f"  特异性 (Sp):        {spe:.4f}")
-print(f"  精确率 (Precision): {pre:.4f}")
-print(f"  F1分数 (F1):        {f1:.4f}")
+print("=" * 40)
 print(f"  马修斯系数 (MCC):   {mcc:.4f}")
+print(f"  F1分数 (F1):        {f1:.4f}")
 print(f"  ROC-AUC:            {roc_auc:.4f}")
 print(f"  PR-AUC (AP):        {pr_auc:.4f}")
-print("=" * 60)
+print("=" * 40)
 
 # 保存指标
 metrics = {
-    "Acc": acc, 
-    "Sn": sen, 
-    "Sp": spe, 
-    "Precision": pre,
+    "MCC": mcc,
     "F1": f1,
-    "MCC": mcc, 
     "ROC-AUC": roc_auc,
     "PR-AUC": pr_auc
 }
