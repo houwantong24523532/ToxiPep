@@ -208,15 +208,15 @@ n_neg = len(train_labels) - n_pos
 print(f"训练集类别分布: 正样本 {n_pos}, 负样本 {n_neg}, 比例 1:{n_neg/n_pos:.2f}")
 
 # Step 1: 计算类别权重 - 给少数类（正样本）更大的权重
-pos_weight = n_neg / n_pos  # 正样本的权重倍数
-class_weights = torch.tensor([1.0, pos_weight]).to(device)  # [neg_weight, pos_weight]
+pos_weight = np.sqrt(n_neg / n_pos)
+class_weights = torch.tensor([1.0, pos_weight], dtype=torch.float32).to(device)
 print(f"类别权重: 负样本=1.0, 正样本={pos_weight:.2f}")
 
 # Step 2: 选择损失函数
 # - True: 使用 Focal Loss + 类别权重（推荐，双重加强）
 # - False: 只使用类别权重的普通交叉熵
 USE_FOCAL_LOSS = True
-FOCAL_GAMMA = 2.0  # gamma越大，对易分类样本的惩罚越小
+FOCAL_GAMMA = 1.0
 
 if USE_FOCAL_LOSS:
     # Focal Loss 会同时使用类别权重(alpha)和聚焦机制(gamma)
@@ -235,7 +235,7 @@ scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=10, T_mult=2)
 
 # ============== 训练参数 ==============
 n_epochs = 100
-best_mcc = -1.0
+best_score = -1.0
 best_model_path = "best_model.pth"
 optimal_threshold = 0.5
 
@@ -255,19 +255,20 @@ for epoch in range(n_epochs):
           f'{metrics_opt["mcc"]:6.4f} | {metrics_opt["f1"]:6.4f} | '
           f'{metrics_opt["roc_auc"]:6.4f} | {metrics_opt["pr_auc"]:6.4f} | {opt_thresh:6.2f}')
 
-    if metrics_opt["mcc"] > best_mcc:
-        best_mcc = metrics_opt["mcc"]
+    composite_score = 0.5 * metrics_opt["mcc"] + 0.5 * metrics_opt["pr_auc"]
+    if composite_score > best_score:
+        best_score = composite_score
         optimal_threshold = opt_thresh
         torch.save({
             'model_state_dict': model.state_dict(),
             'optimal_threshold': optimal_threshold,
             'metrics': metrics_opt
         }, best_model_path)
-        print(f'  --> 新最佳模型! MCC={best_mcc:.4f}, Threshold={optimal_threshold:.2f}')
+        print(f'  --> 新最佳模型! Score={best_score:.4f} (MCC={metrics_opt["mcc"]:.4f}, PR-AUC={metrics_opt["pr_auc"]:.4f}), Threshold={optimal_threshold:.2f}')
 
 print("=" * 70)
 print(f"\n训练完成！")
-print(f"最佳MCC: {best_mcc:.4f}")
+print(f"最佳综合评分: {best_score:.4f}")
 print(f"最优阈值: {optimal_threshold:.2f}")
 print(f"模型已保存至: {best_model_path}")
 
