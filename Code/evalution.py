@@ -37,13 +37,15 @@ def evaluate_model(model, test_loader, criterion, device, threshold=0.5):
 
 def calculate_metrics(all_labels, all_preds, all_probs):
     tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel()
+    sn = tp / (tp + fn) if (tp + fn) > 0 else 0
+    sp = tn / (tn + fp) if (tn + fp) > 0 else 0
+    acc = (tp + tn) / (tp + tn + fp + fn)
     pre = tp / (tp + fp) if (tp + fp) > 0 else 0
-    sen = tp / (tp + fn) if (tp + fn) > 0 else 0
-    f1 = 2 * pre * sen / (pre + sen) if (pre + sen) > 0 else 0
+    f1 = 2 * pre * sn / (pre + sn) if (pre + sn) > 0 else 0
     mcc = matthews_corrcoef(all_labels, all_preds)
     roc_auc = roc_auc_score(all_labels, all_probs)
     pr_auc = average_precision_score(all_labels, all_probs)
-    return mcc, f1, roc_auc, pr_auc
+    return sn, sp, acc, mcc, pre, f1, roc_auc, pr_auc
 
 
 def save_metrics_to_csv(metrics, filename="metrics.csv"):
@@ -107,21 +109,29 @@ print(f"\n正在评估模型（阈值: {optimal_threshold:.2f}）...")
 _, all_preds, all_labels, all_probs = evaluate_model(model, test_loader, criterion, device, threshold=optimal_threshold)
 
 # 计算指标
-mcc, f1, roc_auc, pr_auc = calculate_metrics(all_labels, all_preds, all_probs)
+sn, sp, acc, mcc, pre, f1, roc_auc, pr_auc = calculate_metrics(all_labels, all_preds, all_probs)
 
 # 打印结果
 print("\n" + "=" * 40)
 print("测试集评估结果")
 print("=" * 40)
+print(f"  灵敏度 (Sn):        {sn:.4f}")
+print(f"  特异性 (Sp):        {sp:.4f}")
+print(f"  准确率 (Acc):       {acc:.4f}")
 print(f"  马修斯系数 (MCC):   {mcc:.4f}")
-print(f"  F1分数 (F1):        {f1:.4f}")
+print(f"  精确率 (Precision): {pre:.4f}")
+print(f"  F1 分数 (F1):       {f1:.4f}")
 print(f"  ROC-AUC:            {roc_auc:.4f}")
 print(f"  PR-AUC (AP):        {pr_auc:.4f}")
 print("=" * 40)
 
 # 保存指标
 metrics = {
+    "Sn": sn,
+    "Sp": sp,
+    "Acc": acc,
     "MCC": mcc,
+    "Precision": pre,
     "F1": f1,
     "ROC-AUC": roc_auc,
     "PR-AUC": pr_auc

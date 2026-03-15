@@ -79,13 +79,15 @@ def model_inference(model, test_loader, criterion, device):
 
 
 def compute_metrics(all_probs, all_labels, threshold=0.5):
-    """根据阈值计算四项指标"""
+    """根据阈值计算八项指标"""
     all_preds = (all_probs >= threshold).astype(int)
     
     tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel()
     
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0      # Sn
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0      # Sp
+    accuracy = (tp + tn) / (tp + tn + fp + fn)                 # Acc
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
     f1 = 2 * precision * sensitivity / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
     
     denom = np.sqrt((tp+fp)*(tp+fn)*(tn+fp)*(tn+fn))
@@ -98,7 +100,11 @@ def compute_metrics(all_probs, all_labels, threshold=0.5):
         roc_auc = 0
         pr_auc = 0
     
-    return {'mcc': mcc, 'f1': f1, 'roc_auc': roc_auc, 'pr_auc': pr_auc}
+    return {
+        'sn': sensitivity, 'sp': specificity, 'acc': accuracy,
+        'mcc': mcc, 'precision': precision, 'f1': f1,
+        'roc_auc': roc_auc, 'pr_auc': pr_auc
+    }
 
 
 def find_optimal_threshold(all_probs, all_labels):
@@ -241,8 +247,8 @@ optimal_threshold = 0.5
 
 print(f"\n开始训练，共 {n_epochs} 轮...")
 print("=" * 70)
-print(f"{'Epoch':>5} | {'Loss':>7} | {'MCC':>6} | {'F1':>6} | {'AUC':>6} | {'PR-AUC':>6} | {'Thresh':>6}")
-print("-" * 70)
+print(f"{'Epoch':>5} | {'Loss':>7} | {'Sn':>6} | {'Sp':>6} | {'Acc':>6} | {'MCC':>6} | {'Prec':>6} | {'F1':>6} | {'AUC':>6} | {'PR-AUC':>6} | {'Thresh':>6}")
+print("-" * 110)
 
 for epoch in range(n_epochs):
     train_loss = train_model(model, train_loader, criterion, optimizer, device, scheduler)
@@ -252,7 +258,8 @@ for epoch in range(n_epochs):
     metrics_opt = compute_metrics(all_probs, all_labels, threshold=opt_thresh)
 
     print(f'{epoch + 1:5d} | {train_loss:7.4f} | '
-          f'{metrics_opt["mcc"]:6.4f} | {metrics_opt["f1"]:6.4f} | '
+          f'{metrics_opt["sn"]:6.4f} | {metrics_opt["sp"]:6.4f} | {metrics_opt["acc"]:6.4f} | '
+          f'{metrics_opt["mcc"]:6.4f} | {metrics_opt["precision"]:6.4f} | {metrics_opt["f1"]:6.4f} | '
           f'{metrics_opt["roc_auc"]:6.4f} | {metrics_opt["pr_auc"]:6.4f} | {opt_thresh:6.2f}')
 
     composite_score = 0.5 * metrics_opt["mcc"] + 0.5 * metrics_opt["pr_auc"]
@@ -266,7 +273,7 @@ for epoch in range(n_epochs):
         }, best_model_path)
         print(f'  --> 新最佳模型! Score={best_score:.4f} (MCC={metrics_opt["mcc"]:.4f}, PR-AUC={metrics_opt["pr_auc"]:.4f}), Threshold={optimal_threshold:.2f}')
 
-print("=" * 70)
+print("=" * 110)
 print(f"\n训练完成！")
 print(f"最佳综合评分: {best_score:.4f}")
 print(f"最优阈值: {optimal_threshold:.2f}")
@@ -280,8 +287,12 @@ checkpoint = torch.load(best_model_path, weights_only=False)
 model.load_state_dict(checkpoint['model_state_dict'])
 all_probs, all_labels, _ = model_inference(model, test_loader, criterion, device)
 final_metrics = compute_metrics(all_probs, all_labels, threshold=checkpoint['optimal_threshold'])
-print(f"MCC:             {final_metrics['mcc']:.4f}")
-print(f"F1:              {final_metrics['f1']:.4f}")
+print(f"灵敏度 (Sn):     {final_metrics['sn']:.4f}")
+print(f"特异性 (Sp):     {final_metrics['sp']:.4f}")
+print(f"准确率 (Acc):    {final_metrics['acc']:.4f}")
+print(f"马修斯系数 (MCC): {final_metrics['mcc']:.4f}")
+print(f"精确率 (Prec):   {final_metrics['precision']:.4f}")
+print(f"F1 分数 (F1):    {final_metrics['f1']:.4f}")
 print(f"ROC-AUC:         {final_metrics['roc_auc']:.4f}")
-print(f"PR-AUC:          {final_metrics['pr_auc']:.4f}")
+print(f"PR-AUC (AP):     {final_metrics['pr_auc']:.4f}")
 print(f"最优阈值:        {checkpoint['optimal_threshold']:.2f}")
