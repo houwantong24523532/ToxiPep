@@ -71,7 +71,6 @@ def load_data_from_separate_files(pos_file, neg_file, max_len=34):
     sequences = []
     labels = []
     
-    # 加载正样本
     with open(pos_file, 'r') as f:
         current_seq = None
         for line in f:
@@ -81,11 +80,10 @@ def load_data_from_separate_files(pos_file, neg_file, max_len=34):
             if line.startswith('>'):
                 current_seq = ''
                 sequences.append(current_seq)
-                labels.append(1)  # 正样本标签为1（已修饰）
+                labels.append(1)
             else:
                 sequences[-1] += line.upper()
     
-    # 加载负样本
     with open(neg_file, 'r') as f:
         current_seq = None
         for line in f:
@@ -95,15 +93,13 @@ def load_data_from_separate_files(pos_file, neg_file, max_len=34):
             if line.startswith('>'):
                 current_seq = ''
                 sequences.append(current_seq)
-                labels.append(0)  # 负样本标签为0（未修饰）
+                labels.append(0)
             else:
                 sequences[-1] += line.upper()
     
-    # 转换序列为索引
     indexed_sequences = transform_Pep_to_index(sequences, Pep_residue2idx)
     padded_sequences = pad_sequence(indexed_sequences, max_len=max_len)
     
-    # 生成图特征（带进度条）
     print(f"  正在生成图特征 ({len(sequences)} 条序列)...")
     graph_features = [convert_to_graph_channel(seq, max_seq_len=max_len-1) for seq in tqdm(sequences, desc="  处理进度")]
     

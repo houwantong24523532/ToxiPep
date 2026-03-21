@@ -207,3 +207,65 @@ class ToxiPep_Model(nn.Module):
 
         logits = self.output_layer(hidden) / self.temperature
         return logits
+
+
+class ToxiPep_WithoutSequenceEncoder(nn.Module):
+    """消融实验：移除 Sequence Encoder 和 BAN，仅保留 Structure Encoder"""
+
+    def __init__(self, d_model, structural_config):
+        super(ToxiPep_WithoutSequenceEncoder, self).__init__()
+        self.structural_model = Structural(**structural_config)
+        self.structural_linear = nn.Linear(1024, d_model)
+
+        hidden_dim = 256
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.5),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.5),
+        )
+        self.output_layer = nn.Linear(hidden_dim, 2)
+        self.temperature = 1.0
+
+    def forward(self, input_ids, graph_features, device):
+        structural_output = self.structural_model(graph_features, device)
+        structural_output = self.structural_linear(structural_output)
+
+        hidden = self.classifier(structural_output)
+
+        logits = self.output_layer(hidden) / self.temperature
+        return logits
+
+
+class ToxiPep_WithoutStructureEncoder(nn.Module):
+    """消融实验：移除 Structure Encoder 和 BAN，仅保留 Sequence Encoder"""
+
+    def __init__(self, vocab_size, d_model, d_ff, n_layers, n_heads, max_len):
+        super(ToxiPep_WithoutStructureEncoder, self).__init__()
+        self.peptide_model = peptide(vocab_size, d_model, d_ff, n_layers, n_heads, max_len)
+
+        hidden_dim = 256
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.5),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.5),
+        )
+        self.output_layer = nn.Linear(hidden_dim, 2)
+        self.temperature = 1.0
+
+    def forward(self, input_ids, graph_features, device):
+        peptide_output = self.peptide_model(input_ids)
+
+        hidden = self.classifier(peptide_output)
+
+        logits = self.output_layer(hidden) / self.temperature
+        return logits
