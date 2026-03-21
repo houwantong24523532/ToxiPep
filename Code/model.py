@@ -269,3 +269,126 @@ class ToxiPep_WithoutStructureEncoder(nn.Module):
 
         logits = self.output_layer(hidden) / self.temperature
         return logits
+
+
+class ToxiPep_CrossAttention(nn.Module):
+    """对比实验：使用 Cross Attention 替代 BAN 进行特征融合"""
+
+    def __init__(self, vocab_size, d_model, d_ff, n_layers, n_heads, max_len, structural_config):
+        super(ToxiPep_CrossAttention, self).__init__()
+        self.peptide_model = peptide(vocab_size, d_model, d_ff, n_layers, n_heads, max_len)
+        self.structural_model = Structural(**structural_config)
+        self.structural_linear = nn.Linear(1024, d_model)
+
+        self.cross_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=4, dropout=0.5, batch_first=True)
+        self.norm = nn.LayerNorm(d_model)
+
+        hidden_dim = 256
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.5),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.5),
+        )
+        self.output_layer = nn.Linear(hidden_dim, 2)
+        self.temperature = 1.0
+
+    def forward(self, input_ids, graph_features, device):
+        peptide_output = self.peptide_model(input_ids)
+        structural_output = self.structural_model(graph_features, device)
+        structural_output = self.structural_linear(structural_output)
+
+        tokens = torch.stack([peptide_output, structural_output], dim=1)
+        attn_output, _ = self.cross_attn(tokens, tokens, tokens)
+        fused = self.norm(attn_output.mean(dim=1))
+
+        hidden = self.classifier(fused)
+        logits = self.output_layer(hidden) / self.temperature
+        return logits
+
+
+class ToxiPep_InformationBottleneck(nn.Module):
+    """对比实验：使用 Information Bottleneck (DVIB) 替代 BAN 进行特征融合"""
+
+    def __init__(self, vocab_size, d_model, d_ff, n_layers, n_heads, max_len, structural_config, k=128):
+        super(ToxiPep_InformationBottleneck, self).__init__()
+        self.peptide_model = peptide(vocab_size, d_model, d_ff, n_layers, n_heads, max_len)
+        self.structural_model = Structural(**structural_config)
+        self.structural_linear = nn.Linear(1024, d_model)
+
+        combined_dim = d_model * 2
+        self.fc1 = nn.Linear(combined_dim, combined_dim)
+        self.enc_mean = nn.Linear(combined_dim, k)
+        self.enc_std = nn.Linear(combined_dim, k)
+        self.dec = nn.Linear(k, 2)
+        self.drop_layer = nn.Dropout(0.5)
+
+        nn.init.xavier_uniform_(self.fc1.weight)
+        nn.init.constant_(self.fc1.bias, 0.0)
+        nn.init.xavier_uniform_(self.enc_mean.weight)
+        nn.init.constant_(self.enc_mean.bias, 0.0)
+        nn.init.xavier_uniform_(self.enc_std.weight)
+        nn.init.constant_(self.enc_std.bias, 0.0)
+        nn.init.xavier_uniform_(self.dec.weight)
+        nn.init.constant_(self.dec.bias, 0.0)
+
+    def forward(self, input_ids, graph_features, device):
+        peptide_output = self.peptide_model(input_ids)
+        structural_output = self.structural_model(graph_features, device)
+        structural_output = self.structural_linear(structural_output)
+
+        combined = torch.cat([peptide_output, structural_output], dim=-1)
+        hidden = F.relu(self.fc1(combined))
+        hidden = self.drop_layer(hidden)
+
+        mean = self.enc_mean(hidden)
+        std = F.softplus(self.enc_std(hidden))
+
+        if self.training:
+            eps = torch.randn_like(std)
+            z = mean + std * eps
+        else:
+            z = mean
+
+        logits = self.dec(z)
+        return logits
+
+
+class ToxiPep_Concatenation(nn.Module):
+    """对比实验：不使用特征融合，直接拼接两个编码器的输出"""
+
+    def __init__(self, vocab_size, d_model, d_ff, n_layers, n_heads, max_len, structural_config):
+        super(ToxiPep_Concatenation, self).__init__()
+        self.peptide_model = peptide(vocab_size, d_model, d_ff, n_layers, n_heads, max_len)
+        self.structural_model = Structural(**structural_config)
+        self.structural_linear = nn.Linear(1024, d_model)
+
+        combined_dim = d_model * 2
+        hidden_dim = 256
+        self.classifier = nn.Sequential(
+            nn.Linear(combined_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.5),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Dropout(0.5),
+        )
+        self.output_layer = nn.Linear(hidden_dim, 2)
+        self.temperature = 1.0
+
+    def forward(self, input_ids, graph_features, device):
+        peptide_output = self.peptide_model(input_ids)
+        structural_output = self.structural_model(graph_features, device)
+        structural_output = self.structural_linear(structural_output)
+
+        combined = torch.cat([peptide_output, structural_output], dim=-1)
+
+        hidden = self.classifier(combined)
+        logits = self.output_layer(hidden) / self.temperature
+        return logits
